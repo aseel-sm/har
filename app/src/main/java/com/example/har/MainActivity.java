@@ -12,46 +12,32 @@ import android.widget.CompoundButton;
 import android.widget.Switch;
 import android.widget.TextView;
 
-import org.tensorflow.lite.Interpreter;
-import org.tensorflow.lite.DataType;
-import org.tensorflow.lite.support.tensorbuffer.TensorBuffer;
 
 
 
-import java.io.IOException;
 import java.math.BigDecimal;
-import java.nio.ByteBuffer;
 
-import java.nio.ByteOrder;
-import java.nio.charset.StandardCharsets;
+
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
-import java.util.Timer;
+import java.util.Random;
 
-
-
-import android.content.res.AssetFileDescriptor;
-
-
-
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.nio.MappedByteBuffer;
-import java.nio.channels.FileChannel;
 
 
 
 public class MainActivity extends AppCompatActivity implements SensorEventListener,TextToSpeech.OnInitListener {
 
     private static final int TIME_STAMP = 100;
-    private static final int FEATURES = 9;
+    private static final int FEATURES = 12;
     private static final String TAG = "MainActivity";
 
     private static List<Float> ax,ay,az;
     private static List<Float> gx,gy,gz;
     private static List<Float> lx,ly,lz;
+    private static List<Float> ma,ml,mg;
+
 
     private SensorManager mSensorManager;
     private Sensor mAccelerometer, mGyroscope, mLinearAcceleration;
@@ -69,10 +55,9 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
     private Switch SoundSwitch;
 
 
-    static Interpreter interpreter;
+    private HARClassifier classifier;
 
-
-    private static String[] labels = {"Biking","DownStairs", "Jogging", "Sitting", "Standing","Upstairs","Waliking",};
+    private static String[] labels = {"Biking","DownStairs", "Jogging", "Sitting", "Standing","Upstairs","Walking",};
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -84,14 +69,7 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
         ax=new ArrayList<>(); ay=new ArrayList<>(); az=new ArrayList<>();
         gx=new ArrayList<>(); gy=new ArrayList<>(); gz=new ArrayList<>();
         lx=new ArrayList<>(); ly=new ArrayList<>(); lz=new ArrayList<>();
-
-        try {
-            interpreter = new Interpreter(loadModelFile(),null);
-            Log.i(TAG, "Loaded Model1-----------------------------------: ");
-        } catch (IOException e) {
-            Log.i(TAG, "Loading Model failed-----------------------------------: ");
-            e.printStackTrace();
-        }
+        ma = new ArrayList<>(); ml = new ArrayList<>(); mg = new ArrayList<>();
 
 
         ClassifierSwitch = (Switch) findViewById(R.id.classifierSwitch);
@@ -125,32 +103,29 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
         mGyroscope = mSensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
         mLinearAcceleration = mSensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION);
 
+        classifier = new HARClassifier(getApplicationContext());
 
         mSensorManager.registerListener(this,mAccelerometer, SensorManager.SENSOR_DELAY_FASTEST);
         mSensorManager.registerListener(this,mGyroscope, SensorManager.SENSOR_DELAY_FASTEST);
         mSensorManager.registerListener(this,mLinearAcceleration, SensorManager.SENSOR_DELAY_FASTEST);
 
-        textToSpeech = new TextToSpeech(this, this);
-        textToSpeech.setLanguage(Locale.US);
-        textToSpeech.setSpeechRate(0.7f);
+        textToSpeech = new TextToSpeech(this, new TextToSpeech.OnInitListener() {
+            @Override
+            public void onInit(int status) {
+                if (status == TextToSpeech.SUCCESS ) {
+
+                    textToSpeech.setLanguage(Locale.US);
+                    textToSpeech.setSpeechRate(0.7f);
+                }}}
+);
+//        textToSpeech.setLanguage(Locale.US);
+
 //        ClassifierSwitch.setChecked(true);
 
     }
 
 
 
-
-    private MappedByteBuffer loadModelFile() throws IOException
-    {
-        AssetFileDescriptor assetFileDescriptor = this.getAssets().openFd("model_cnnn.tflite");
-        FileInputStream fileInputStream = new FileInputStream(assetFileDescriptor.getFileDescriptor());
-        FileChannel fileChannel = fileInputStream.getChannel();
-
-        long startOffset = assetFileDescriptor.getStartOffset();
-        long len = assetFileDescriptor.getLength();
-
-        return fileChannel.map(FileChannel.MapMode.READ_ONLY,startOffset,len);
-    }
 
 
     private void initLayoutItems() {
@@ -164,47 +139,33 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
     }
 
 
-    static public float[][] predictProbabilities(float[] data) {
-        ByteBuffer input = ByteBuffer.allocateDirect(TIME_STAMP * 9 * 4).order(ByteOrder.nativeOrder());
-        float[][] result = new float[1][7];
-//        System.out.print("Data---------------------------------------");
-//        Log.i(TAG, "Data to feed: "+Arrays.toString(data));
-        for (int i=0;i<TIME_STAMP;i++){
-            input.putFloat(data[i]);
-        }
 
-        input.rewind();
-
-
-//      Log.i(TAG, "BUffer");
-//
-//        for (int i = 1; i <= 30; i++)
-//            Log.i(TAG, "Buffer: "+input.getFloat());
-//
-//        System.out.print("]");
-
-     interpreter.run(input,result);
-        return result;
-    }
 
 
     @Override
     public void onSensorChanged(SensorEvent event) {
         Sensor sensor = event.sensor;
         if (sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
+
             ax.add(event.values[0]);
             ay.add(event.values[1]);
             az.add(event.values[2]);
         } else if(sensor.getType() == Sensor.TYPE_GYROSCOPE) {
+
+
             gx.add(event.values[0]);
             gy.add(event.values[1]);
             gz.add(event.values[2]);
-        } else {
-            lx.add(event.values[0]);
-            ly.add(event.values[1]);
-            lz.add(event.values[2]);
-        }
-if(ClassifierSwitch.isChecked()==true)
+        } else if(sensor.getType() == Sensor.TYPE_LINEAR_ACCELERATION) {
+//
+
+                lx.add(event.values[0]);
+                ly.add(event.values[1]);
+                lz.add(event.values[2]);
+            }
+
+
+        if(ClassifierSwitch.isChecked()==true)
         predictActivity();
     }
 
@@ -223,10 +184,23 @@ if(ClassifierSwitch.isChecked()==true)
         if (ax.size() >= TIME_STAMP && ay.size() >= TIME_STAMP && az.size() >= TIME_STAMP
         && gx.size() >= TIME_STAMP && gy.size() >= TIME_STAMP && gz.size() >= TIME_STAMP
         && lx.size() >= TIME_STAMP && ly.size() >= TIME_STAMP && lz.size() >= TIME_STAMP) {
+
+
+            double maValue; double mgValue; double mlValue;
+
+            for( int i = 0; i < TIME_STAMP ; i++ ) {
+                maValue = Math.sqrt(Math.pow(ax.get(i), 2) + Math.pow(ay.get(i), 2) + Math.pow(az.get(i), 2));
+                mlValue = Math.sqrt(Math.pow(lx.get(i), 2) + Math.pow(ly.get(i), 2) + Math.pow(lz.get(i), 2));
+                mgValue = Math.sqrt(Math.pow(gx.get(i), 2) + Math.pow(gy.get(i), 2) + Math.pow(gz.get(i), 2));
+
+                ma.add((float)maValue);
+                ml.add((float)mlValue);
+                mg.add((float)mgValue);
+            }
+
             data.addAll(ax.subList(0,TIME_STAMP));
             data.addAll(ay.subList(0,TIME_STAMP));
             data.addAll(az.subList(0,TIME_STAMP));
-
 
 
             data.addAll(lx.subList(0,TIME_STAMP));
@@ -236,8 +210,17 @@ if(ClassifierSwitch.isChecked()==true)
             data.addAll(gx.subList(0,TIME_STAMP));
             data.addAll(gy.subList(0,TIME_STAMP));
             data.addAll(gz.subList(0,TIME_STAMP));
+
+
+            data.addAll(ma.subList(0, TIME_STAMP));
+            data.addAll(ml.subList(0, TIME_STAMP));
+            data.addAll(mg.subList(0, TIME_STAMP));
+
             System.out.print("Data---------------------------------------");
-              results = predictProbabilities(toFloatArray(data))[0];
+              results = classifier.predictProbabilities(toFloatArray(data));
+
+
+
     Log.i(TAG, "predictActivity: "+ Arrays.toString(results));
 
                 bikingTextView.setText(Float.toString(round(results[0],2)) );
@@ -252,6 +235,9 @@ if(ClassifierSwitch.isChecked()==true)
                 ax.clear(); ay.clear(); az.clear();
                 gx.clear(); gy.clear(); gz.clear();
                 lx.clear();ly.clear(); lz.clear();
+                ma.clear(); ml.clear(); mg.clear();
+
+
 
                 float max = -1;
                 int idx = -1;
@@ -261,13 +247,30 @@ if(ClassifierSwitch.isChecked()==true)
                         max = results[i];
                     }
                 }
+
                 if(ttsFlag!=idx){
                     textToSpeech.stop();
                 }
-                ttsFlag=idx;
-
+//                ttsFlag=idx;
+            if(idx==1 || idx==5)
+                idx=6;
                 if(SoundSwitch.isChecked() == true){
-                    textToSpeech.speak(labels[idx], TextToSpeech.QUEUE_ADD, null, null);
+//                    textToSpeech.speak(labels[idx], TextToSpeech.QUEUE_ADD, null, null);
+                    Log.i(TAG, "Ttsflag-"+ttsFlag);
+                    Log.i(TAG, "index-"+idx);
+
+
+                    if(max > 0.65 ) {
+                        if(idx==2 && max<0.99)
+                            return;
+                        if(idx==0 && max<0.99)
+                            return;
+
+                        ttsFlag=idx;
+                        textToSpeech.speak(labels[idx], TextToSpeech.QUEUE_ADD, null,
+                                Integer.toString(new Random().nextInt()));
+
+                    }
 
                 }
             Log.i(TAG, "Prediction: "+ labels[idx]);
@@ -291,16 +294,21 @@ if(ClassifierSwitch.isChecked()==true)
         }
 //        System.out.println("ArraySize"+array.length);
 //        System.out.println("ArrayContent:"+Arrays.toString(array));
-
-
-//        int n=TIME_STAMP;
-//        int m=FEATURES;
-//        float[][] newArr=new float[n][m];
-//        for (i=0;i<n;i++){
-//            for (int j=0;j<m;m++){
+        Log.i(TAG, "toFloatArray: Started");
+        float[] ordered=new float[data.size()];
+        int n=TIME_STAMP;
+        int m=FEATURES;
+        float[][] newArr=new float[n][m];
+        int idx=0;
+        for (i=0;i<n;i++){
+            for (int j=0;j<m;j++){
 //                newArr[i][j]=array[(j*n)+i];
-//            }
-//        }
+                ordered[idx]=array[(j*n)+i];
+//                Log.i(TAG, "toFloatArray: "+i+" "+j);
+
+                idx++;
+            }
+        }
         return array;
     }
 
@@ -319,6 +327,7 @@ if(ClassifierSwitch.isChecked()==true)
         mSensorManager.unregisterListener(this,mGyroscope);
         mSensorManager.unregisterListener(this,mLinearAcceleration);
         mSensorManager.unregisterListener(this);
+        textToSpeech.stop();
         super.onPause();
     }
 
